@@ -1,0 +1,16 @@
+{
+  "id": "openclaw-photos",
+  "name": "OpenClaw Photo Library",
+  "version": "0.1.0",
+  "description": "Tag-based photo library with collections — save, random retrieve, list, delete.",
+  "configSchema": {
+    "type": "object",
+    "additionalProperties": false,
+    "properties": {
+      "dataDir": {
+        "type": "string",
+        "description": "Base directory for DB + images"
+      }
+    }
+  }
+}

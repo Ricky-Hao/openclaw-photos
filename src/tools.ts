@@ -1,0 +1,123 @@
+// ── Tool parameter schemas + execute factories ─────────────────────
+
+import { Type, type TObject } from "@sinclair/typebox";
+import type { PhotoStore } from "./store.js";
+
+// ── Tool Result type ────────────────────────────────────────────────
+
+export type ToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  meta?: Record<string, unknown>;
+};
+
+function textResult(data: unknown): ToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify(data, null, 2) }],
+  };
+}
+
+function errorResult(message: string): ToolResult {
+  return {
+    content: [{ type: "text", text: JSON.stringify({ error: message }) }],
+  };
+}
+
+// ── photo_save ──────────────────────────────────────────────────────
+
+export const photoSaveParameters: TObject = Type.Object({
+  url: Type.String({ description: "Image URL to download" }),
+  collection: Type.String({ description: 'Collection ID (e.g. "yaoyao")' }),
+  tags: Type.Optional(Type.Array(Type.String(), { description: "Tags to assign", default: [] })),
+  description: Type.Optional(Type.String({ description: "Human description" })),
+});
+
+export function createPhotoSaveExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const url = params.url as string;
+      const collection = params.collection as string;
+      const tags = (params.tags as string[] | undefined) ?? [];
+      const description = params.description as string | undefined;
+
+      const result = await store.save(url, collection, tags, description);
+      return textResult(result);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+// ── photo_get ───────────────────────────────────────────────────────
+
+export const photoGetParameters: TObject = Type.Object({
+  collection: Type.Optional(Type.String({ description: "Filter by collection" })),
+  tags: Type.Optional(Type.Array(Type.String(), { description: "Filter by tags (OR match)" })),
+  count: Type.Optional(
+    Type.Integer({ description: "Number of photos to return", default: 1, minimum: 1, maximum: 10 }),
+  ),
+});
+
+export function createPhotoGetExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const collection = params.collection as string | undefined;
+      const tags = params.tags as string[] | undefined;
+      const count = (params.count as number | undefined) ?? 1;
+
+      const photos = store.getRandom(collection, tags, count);
+      if (photos.length === 0) {
+        return textResult({ photos: [], message: "No photos found" });
+      }
+      return textResult({ photos });
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+// ── photo_list ──────────────────────────────────────────────────────
+
+export const photoListParameters: TObject = Type.Object({
+  collection: Type.Optional(Type.String({ description: "Filter to specific collection" })),
+});
+
+export function createPhotoListExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const collection = params.collection as string | undefined;
+      const result = store.list(collection);
+      return textResult(result);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+// ── photo_delete ────────────────────────────────────────────────────
+
+export const photoDeleteParameters: TObject = Type.Object({
+  id: Type.String({ description: "Photo ID to delete" }),
+});
+
+export function createPhotoDeleteExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const id = params.id as string;
+      const result = store.delete(id);
+      if (!result.deleted) {
+        return errorResult(result.error ?? "Photo not found");
+      }
+      return textResult(result);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
