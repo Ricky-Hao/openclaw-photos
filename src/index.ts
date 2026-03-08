@@ -66,19 +66,23 @@ export interface OpenClawPluginApi {
 // ── Plugin state ────────────────────────────────────────────────────
 
 let store: PhotoStore | null = null;
+let mediaTmpDir: string = "";
 
 function ensureInit(api: OpenClawPluginApi, stateDir?: string): void {
   if (store) return;
 
+  const resolvedStateDir = stateDir ?? join(homedir(), ".openclaw");
   const cfg = (api.pluginConfig ?? {}) as { dataDir?: string };
-  const dataDir =
-    cfg.dataDir || join(stateDir ?? join(homedir(), ".openclaw", "data"), "photos");
+  const dataDir = cfg.dataDir || join(resolvedStateDir, "data", "photos");
 
   const dbPath = join(dataDir, "photos.db");
   const db = openDatabase(dbPath);
   store = new PhotoStore(db, join(dataDir, "images"));
 
-  api.logger.info(`[openclaw-photos] initialized — db=${dbPath}`);
+  // Temp dir under /tmp/openclaw — allowed by resolveAllowedTmpMediaPath for sandbox agents
+  mediaTmpDir = join("/tmp", "openclaw", "photos");
+
+  api.logger.info(`[openclaw-photos] initialized — db=${dbPath}, tmpDir=${mediaTmpDir}`);
 }
 
 // ── Register ────────────────────────────────────────────────────────
@@ -107,7 +111,7 @@ function register(api: OpenClawPluginApi): void {
       parameters: photoGetParameters,
       execute: async (id, params) => {
         if (!store) return { content: [{ type: "text", text: JSON.stringify({ error: "Plugin not initialized" }) }] };
-        return createPhotoGetExecute(store)(id, params);
+        return createPhotoGetExecute(store, mediaTmpDir)(id, params);
       },
     },
     {
@@ -140,6 +144,9 @@ function register(api: OpenClawPluginApi): void {
     id: "photos-init",
     start(ctx: PluginServiceContext) {
       ensureInit(api, ctx.stateDir);
+      if (ctx.workspaceDir) {
+        api.logger.info(`[openclaw-photos] workspaceDir=${ctx.workspaceDir}`);
+      }
     },
   });
 }

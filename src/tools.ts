@@ -1,6 +1,8 @@
 // ── Tool parameter schemas + execute factories ─────────────────────
 
 import { Type, type TObject } from "@sinclair/typebox";
+import { copyFileSync, mkdirSync, existsSync, unlinkSync, readdirSync } from "node:fs";
+import { join, basename } from "node:path";
 import type { PhotoStore } from "./store.js";
 
 // ── Tool Result type ────────────────────────────────────────────────
@@ -61,6 +63,7 @@ export const photoGetParameters: TObject = Type.Object({
 
 export function createPhotoGetExecute(
   store: PhotoStore,
+  tmpDir: string,
 ): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
   return async (_id, params) => {
     try {
@@ -72,7 +75,22 @@ export function createPhotoGetExecute(
       if (photos.length === 0) {
         return textResult({ photos: [], message: "No photos found" });
       }
-      return textResult({ photos });
+
+      // Copy selected photos to tmpDir (inside media whitelist) for sending
+      mkdirSync(tmpDir, { recursive: true });
+      for (const photo of photos) {
+        const srcPath = photo.path;
+        if (existsSync(srcPath)) {
+          const destPath = join(tmpDir, basename(srcPath));
+          copyFileSync(srcPath, destPath);
+          photo.path = destPath;
+        }
+      }
+
+      return textResult({
+        photos,
+        _cleanup: `Temporary files copied to ${tmpDir}. Please delete them after sending (e.g. call exec("rm -f <path>") for each file, or exec("rm -rf ${tmpDir}") to clean all).`,
+      });
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
     }
