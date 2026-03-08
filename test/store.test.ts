@@ -38,7 +38,7 @@ describe("PhotoStore", () => {
     expect(existsSync(saved.path)).toBe(true);
 
     // Get should return it
-    const photos = store.getRandom("cats");
+    const { photos } = store.getRandom("cats");
     expect(photos).toHaveLength(1);
     expect(photos[0].id).toBe(saved.id);
     expect(photos[0].path).toBe(saved.path);
@@ -51,11 +51,11 @@ describe("PhotoStore", () => {
     store.saveFromBuffer(Buffer.from("img-b"), ".jpg", "cats", ["angry"]);
     store.saveFromBuffer(Buffer.from("img-c"), ".jpg", "cats", ["sleepy"]);
 
-    const cute = store.getRandom(undefined, ["cute"], 10);
+    const { photos: cute } = store.getRandom(undefined, ["cute"], 10);
     expect(cute).toHaveLength(1);
     expect(cute[0].tags).toContain("cute");
 
-    const cuteOrAngry = store.getRandom(undefined, ["cute", "angry"], 10);
+    const { photos: cuteOrAngry } = store.getRandom(undefined, ["cute", "angry"], 10);
     expect(cuteOrAngry).toHaveLength(2);
   });
 
@@ -65,11 +65,11 @@ describe("PhotoStore", () => {
     store.saveFromBuffer(Buffer.from("cat-1"), ".jpg", "cats", ["cute"]);
     store.saveFromBuffer(Buffer.from("meme-1"), ".jpg", "memes", ["funny"]);
 
-    const cats = store.getRandom("cats", undefined, 10);
+    const { photos: cats } = store.getRandom("cats", undefined, 10);
     expect(cats).toHaveLength(1);
     expect(cats[0].collection).toBe("cats");
 
-    const memes = store.getRandom("memes", undefined, 10);
+    const { photos: memes } = store.getRandom("memes", undefined, 10);
     expect(memes).toHaveLength(1);
     expect(memes[0].collection).toBe("memes");
   });
@@ -81,7 +81,7 @@ describe("PhotoStore", () => {
     store.saveFromBuffer(Buffer.from("cat-angry"), ".jpg", "cats", ["angry"]);
     store.saveFromBuffer(Buffer.from("dog-cute"), ".jpg", "dogs", ["cute"]);
 
-    const catCute = store.getRandom("cats", ["cute"], 10);
+    const { photos: catCute } = store.getRandom("cats", ["cute"], 10);
     expect(catCute).toHaveLength(1);
     expect(catCute[0].collection).toBe("cats");
     expect(catCute[0].tags).toContain("cute");
@@ -94,7 +94,7 @@ describe("PhotoStore", () => {
       store.saveFromBuffer(Buffer.from(`img-${i}`), ".jpg", "cats", ["cat"]);
     }
 
-    const results = store.getRandom("cats", undefined, 3);
+    const { photos: results } = store.getRandom("cats", undefined, 3);
     expect(results).toHaveLength(3);
     // Each result should be valid
     for (const r of results) {
@@ -116,7 +116,7 @@ describe("PhotoStore", () => {
     expect(second.hash).toBe(first.hash);
 
     // Only one photo in DB
-    const all = store.getRandom("cats", undefined, 10);
+    const { photos: all } = store.getRandom("cats", undefined, 10);
     expect(all).toHaveLength(1);
   });
 
@@ -144,7 +144,7 @@ describe("PhotoStore", () => {
     expect(existsSync(saved.path)).toBe(false);
 
     // DB should be empty
-    const photos = store.getRandom("cats", undefined, 10);
+    const { photos } = store.getRandom("cats", undefined, 10);
     expect(photos).toHaveLength(0);
   });
 
@@ -193,8 +193,8 @@ describe("PhotoStore", () => {
 
   // ── empty library ──────────────────────────────────────────────
 
-  it("should return empty array when library is empty", () => {
-    const photos = store.getRandom();
+  it("should return empty photos when library is empty", () => {
+    const { photos } = store.getRandom();
     expect(photos).toEqual([]);
   });
 
@@ -211,7 +211,7 @@ describe("PhotoStore", () => {
     for (let i = 0; i < 15; i++) {
       store.saveFromBuffer(Buffer.from(`img-${i}`), ".jpg", "cats", ["cat"]);
     }
-    const photos = store.getRandom("cats", undefined, 20);
+    const { photos } = store.getRandom("cats", undefined, 20);
     expect(photos.length).toBeLessThanOrEqual(10);
   });
 
@@ -230,5 +230,135 @@ describe("PhotoStore", () => {
   it("should default description to empty string", () => {
     const saved = store.saveFromBuffer(Buffer.from("no-desc"), ".jpg", "cats", []);
     expect(saved.description).toBe("");
+  });
+});
+
+// ── Send History tests ────────────────────────────────────────────
+
+describe("PhotoStore random history", () => {
+  let store: PhotoStore;
+
+  beforeEach(() => {
+    const db = openMemoryDatabase();
+    const imagesDir = makeTmpDir();
+    store = new PhotoStore(db, imagesDir);
+  });
+
+  it("should prioritize unsent photos when target is provided", () => {
+    // Save 10 photos (more than default threshold of 5)
+    const ids: string[] = [];
+    for (let i = 0; i < 10; i++) {
+      const saved = store.saveFromBuffer(Buffer.from(`img-${i}`), ".jpg", "cats", []);
+      ids.push(saved.id);
+    }
+
+    const sentIds = new Set<string>();
+    // Get 8 photos one-by-one — all should be unique (no reset, remaining > 5)
+    for (let i = 0; i < 8; i++) {
+      const { photos } = store.getRandom("cats", undefined, 1, "group-a", 0);
+      expect(photos).toHaveLength(1);
+      expect(sentIds.has(photos[0].id)).toBe(false);
+      sentIds.add(photos[0].id);
+    }
+    expect(sentIds.size).toBe(8);
+  });
+
+  it("should isolate history between different targets", () => {
+    store.saveFromBuffer(Buffer.from("x"), ".jpg", "cats", []);
+
+    // Send to group-a
+    const { photos: forA } = store.getRandom("cats", undefined, 1, "group-a");
+    expect(forA).toHaveLength(1);
+
+    // group-b should still see it as unsent
+    const statsB = store.getHistoryStats("group-b", "cats");
+    expect(statsB.sent).toBe(0);
+    expect(statsB.remaining).toBe(1);
+
+    // group-a should see it as sent
+    const statsA = store.getHistoryStats("group-a", "cats");
+    expect(statsA.sent).toBe(1);
+  });
+
+  it("should auto-reset when remaining <= threshold", () => {
+    // Save 6 photos, threshold = 5
+    for (let i = 0; i < 6; i++) {
+      store.saveFromBuffer(Buffer.from(`img-${i}`), ".jpg", "cats", []);
+    }
+
+    // Send 1 photo → remaining = 5 → should trigger reset
+    const { history: h1 } = store.getRandom("cats", undefined, 1, "group-a", 5);
+    // After first call: was reset because remaining (5) <= threshold (5)
+    // Actually: before the first call, sent=0, remaining=6, no reset needed
+    // It sends 1, so after: sent=1, remaining=5
+    expect(h1).toBeTruthy();
+
+    // Send another → now sent=1 before this call, remaining=5 → triggers reset!
+    const { history: h2 } = store.getRandom("cats", undefined, 1, "group-a", 5);
+    expect(h2).toBeTruthy();
+    expect(h2!.wasReset).toBe(true);
+  });
+
+  it("should return history info when target is provided", () => {
+    for (let i = 0; i < 3; i++) {
+      store.saveFromBuffer(Buffer.from(`img-${i}`), ".jpg", "cats", []);
+    }
+
+    const { history } = store.getRandom("cats", undefined, 1, "group-a");
+    expect(history).toBeTruthy();
+    expect(history!.total).toBe(3);
+    expect(history!.sent).toBe(1); // updated after recording
+  });
+
+  it("should not return history info without target", () => {
+    store.saveFromBuffer(Buffer.from("x"), ".jpg", "cats", []);
+    const { history } = store.getRandom("cats");
+    expect(history).toBeUndefined();
+  });
+
+  it("should clear history for a specific target", () => {
+    store.saveFromBuffer(Buffer.from("x"), ".jpg", "cats", []);
+
+    // Send to both groups
+    store.getRandom("cats", undefined, 1, "group-a");
+    store.getRandom("cats", undefined, 1, "group-b");
+
+    // Clear only group-a
+    const cleared = store.clearHistory("group-a");
+    expect(cleared).toBe(1);
+
+    // group-a: reset
+    const statsA = store.getHistoryStats("group-a", "cats");
+    expect(statsA.sent).toBe(0);
+
+    // group-b: still has history
+    const statsB = store.getHistoryStats("group-b", "cats");
+    expect(statsB.sent).toBe(1);
+  });
+
+  it("should clear history for specific target + collection", () => {
+    store.saveFromBuffer(Buffer.from("cat-1"), ".jpg", "cats", []);
+    store.saveFromBuffer(Buffer.from("dog-1"), ".jpg", "dogs", []);
+
+    store.getRandom("cats", undefined, 1, "group-a");
+    store.getRandom("dogs", undefined, 1, "group-a");
+
+    // Clear only cats for group-a
+    store.clearHistory("group-a", "cats");
+
+    const catStats = store.getHistoryStats("group-a", "cats");
+    expect(catStats.sent).toBe(0);
+
+    const dogStats = store.getHistoryStats("group-a", "dogs");
+    expect(dogStats.sent).toBe(1);
+  });
+
+  it("should clear all history when no args provided", () => {
+    store.saveFromBuffer(Buffer.from("x"), ".jpg", "cats", []);
+    store.getRandom("cats", undefined, 1, "group-a");
+    store.getRandom("cats", undefined, 1, "group-b");
+
+    const cleared = store.clearHistory();
+    expect(cleared).toBe(2);
   });
 });

@@ -59,6 +59,9 @@ export const photoGetParameters: TObject = Type.Object({
   count: Type.Optional(
     Type.Integer({ description: "Number of photos to return", default: 1, minimum: 1, maximum: 10 }),
   ),
+  target: Type.Optional(
+    Type.String({ description: 'Send target for dedup tracking (e.g. "qq:group:123456"). When provided, avoids repeating photos already sent to this target until most have been shown.' }),
+  ),
 });
 
 export function createPhotoGetExecute(
@@ -70,8 +73,9 @@ export function createPhotoGetExecute(
       const collection = params.collection as string | undefined;
       const tags = params.tags as string[] | undefined;
       const count = (params.count as number | undefined) ?? 1;
+      const target = params.target as string | undefined;
 
-      const photos = store.getRandom(collection, tags, count);
+      const { photos, history } = store.getRandom(collection, tags, count, target);
       if (photos.length === 0) {
         return textResult({ photos: [], message: "No photos found" });
       }
@@ -89,6 +93,7 @@ export function createPhotoGetExecute(
 
       return textResult({
         photos,
+        _history: history,
         _cleanup: `Temporary files copied to ${tmpDir}. Please delete them after sending (e.g. call exec("rm -f <path>") for each file, or exec("rm -rf ${tmpDir}") to clean all).`,
       });
     } catch (err) {
@@ -134,6 +139,37 @@ export function createPhotoDeleteExecute(
         return errorResult(result.error ?? "Photo not found");
       }
       return textResult(result);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+// ── photo_reset_history ─────────────────────────────────────────────
+
+export const photoResetHistoryParameters: TObject = Type.Object({
+  target: Type.Optional(
+    Type.String({ description: 'Target to clear history for (e.g. "qq:group:123456"). If omitted, clears all targets.' }),
+  ),
+  collection: Type.Optional(
+    Type.String({ description: "Only clear history for photos in this collection" }),
+  ),
+});
+
+export function createPhotoResetHistoryExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const target = params.target as string | undefined;
+      const collection = params.collection as string | undefined;
+      const cleared = store.clearHistory(target, collection);
+      return textResult({
+        cleared,
+        target: target ?? "all",
+        collection: collection ?? "all",
+        message: `Cleared ${cleared} random history record(s).`,
+      });
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
     }

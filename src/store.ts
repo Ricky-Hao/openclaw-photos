@@ -15,6 +15,13 @@ export interface PhotoRecord {
   hash: string;
 }
 
+export interface RandomHistoryInfo {
+  total: number;
+  sent: number;
+  remaining: number;
+  wasReset: boolean;
+}
+
 export interface CollectionStat {
   id: string;
   name: string;
@@ -217,47 +224,68 @@ export class PhotoStore {
     };
   }
 
-  // ── Get Random ──────────────────────────────────────────────────
+  // ── Get Random (smart: per-target dedup) ─────────────────────────
 
-  getRandom(collection?: string, tags?: string[], count: number = 1): PhotoRecord[] {
+  /** Default threshold: auto-reset when remaining unsent photos ≤ this value */
+  static RESET_THRESHOLD = 5;
+
+  getRandom(
+    collection?: string,
+    tags?: string[],
+    count: number = 1,
+    target?: string,
+    resetThreshold: number = PhotoStore.RESET_THRESHOLD,
+  ): { photos: PhotoRecord[]; history?: RandomHistoryInfo } {
     const clampedCount = Math.min(Math.max(count, 1), 10);
+
+    // If target provided, handle random-history dedup
+    let historyInfo: RandomHistoryInfo | undefined;
+    if (target) {
+      historyInfo = this.maybeResetAndGetInfo(collection, tags, target, resetThreshold);
+    }
 
     let sql: string;
     const params: unknown[] = [];
 
     if (tags && tags.length > 0) {
-      // Filter by tags (OR match) + optional collection
       const placeholders = tags.map(() => "?").join(", ");
       sql = `
-        SELECT DISTINCT p.id, p.collection, p.file, p.description, p.hash
+        SELECT DISTINCT p.id, p.collection, p.file, p.description, p.hash,
+               rh.sent_at
         FROM photos p
         JOIN photo_tags pt ON pt.photo_id = p.id
+        LEFT JOIN random_history rh ON rh.photo_id = p.id AND rh.collection = p.collection AND rh.target = ?
         WHERE pt.tag IN (${placeholders})
       `;
-      params.push(...tags);
+      params.push(target ?? "", ...tags);
 
       if (collection) {
         sql += " AND p.collection = ?";
         params.push(collection);
       }
 
-      sql += " ORDER BY RANDOM() LIMIT ?";
+      // Unsent first (NULL), then oldest sent, then random within same tier
+      sql += " ORDER BY CASE WHEN rh.sent_at IS NULL THEN 0 ELSE 1 END, rh.sent_at ASC, RANDOM() LIMIT ?";
       params.push(clampedCount);
     } else if (collection) {
       sql = `
-        SELECT p.id, p.collection, p.file, p.description, p.hash
+        SELECT p.id, p.collection, p.file, p.description, p.hash,
+               rh.sent_at
         FROM photos p
+        LEFT JOIN random_history rh ON rh.photo_id = p.id AND rh.collection = p.collection AND rh.target = ?
         WHERE p.collection = ?
-        ORDER BY RANDOM() LIMIT ?
+        ORDER BY CASE WHEN rh.sent_at IS NULL THEN 0 ELSE 1 END, rh.sent_at ASC, RANDOM() LIMIT ?
       `;
-      params.push(collection, clampedCount);
+      params.push(target ?? "", collection, clampedCount);
     } else {
       sql = `
-        SELECT p.id, p.collection, p.file, p.description, p.hash
+        SELECT p.id, p.collection, p.file, p.description, p.hash,
+               rh.sent_at
         FROM photos p
-        ORDER BY RANDOM() LIMIT ?
+        LEFT JOIN random_history rh ON rh.photo_id = p.id AND rh.collection = p.collection AND rh.target = ?
+        ORDER BY CASE WHEN rh.sent_at IS NULL THEN 0 ELSE 1 END, rh.sent_at ASC, RANDOM() LIMIT ?
       `;
-      params.push(clampedCount);
+      params.push(target ?? "", clampedCount);
     }
 
     const rows = this.db.prepare(sql).all(...params) as Array<{
@@ -266,9 +294,10 @@ export class PhotoStore {
       file: string;
       description: string;
       hash: string;
+      sent_at: string | null;
     }>;
 
-    return rows.map((row) => {
+    const photos = rows.map((row) => {
       const rowTags = this.db
         .prepare("SELECT tag FROM photo_tags WHERE photo_id = ?")
         .all(row.id) as { tag: string }[];
@@ -282,6 +311,124 @@ export class PhotoStore {
         hash: row.hash,
       };
     });
+
+    // Record random history
+    if (target && photos.length > 0) {
+      this.recordSent(photos, target);
+      // Update remaining count after recording
+      if (historyInfo) {
+        historyInfo.sent += photos.length;
+        historyInfo.remaining = Math.max(0, historyInfo.total - historyInfo.sent);
+      }
+    }
+
+    return { photos, history: historyInfo };
+  }
+
+  // ── Random history helpers ──────────────────────────────────────────
+
+  /**
+   * Check remaining unsent count for target+collection+tags.
+   * If ≤ threshold, auto-reset (clear history) for that target.
+   */
+  private maybeResetAndGetInfo(
+    collection: string | undefined,
+    tags: string[] | undefined,
+    target: string,
+    threshold: number,
+  ): RandomHistoryInfo {
+    // Count total matching photos
+    const total = this.countMatchingPhotos(collection, tags);
+    // Count how many of those have been sent to this target
+    const sent = this.countSentPhotos(collection, tags, target);
+    const remaining = total - sent;
+
+    let wasReset = false;
+    if (remaining <= threshold) {
+      this.clearHistory(target, collection);
+      wasReset = true;
+      return { total, sent: 0, remaining: total, wasReset };
+    }
+
+    return { total, sent, remaining, wasReset };
+  }
+
+  private countMatchingPhotos(collection?: string, tags?: string[]): number {
+    if (tags && tags.length > 0) {
+      const placeholders = tags.map(() => "?").join(", ");
+      let sql = `SELECT COUNT(DISTINCT p.id) as cnt FROM photos p JOIN photo_tags pt ON pt.photo_id = p.id WHERE pt.tag IN (${placeholders})`;
+      const params: unknown[] = [...tags];
+      if (collection) {
+        sql += " AND p.collection = ?";
+        params.push(collection);
+      }
+      return (this.db.prepare(sql).get(...params) as { cnt: number }).cnt;
+    } else if (collection) {
+      return (this.db.prepare("SELECT COUNT(*) as cnt FROM photos WHERE collection = ?").get(collection) as { cnt: number }).cnt;
+    } else {
+      return (this.db.prepare("SELECT COUNT(*) as cnt FROM photos").get() as { cnt: number }).cnt;
+    }
+  }
+
+  private countSentPhotos(collection: string | undefined, tags: string[] | undefined, target: string): number {
+    if (tags && tags.length > 0) {
+      const placeholders = tags.map(() => "?").join(", ");
+      let sql = `SELECT COUNT(DISTINCT p.id) as cnt FROM photos p JOIN photo_tags pt ON pt.photo_id = p.id JOIN random_history rh ON rh.photo_id = p.id AND rh.collection = p.collection AND rh.target = ? WHERE pt.tag IN (${placeholders})`;
+      const params: unknown[] = [target, ...tags];
+      if (collection) {
+        sql += " AND p.collection = ?";
+        params.push(collection);
+      }
+      return (this.db.prepare(sql).get(...params) as { cnt: number }).cnt;
+    } else if (collection) {
+      return (this.db.prepare("SELECT COUNT(*) as cnt FROM random_history WHERE collection = ? AND target = ?").get(collection, target) as { cnt: number }).cnt;
+    } else {
+      return (this.db.prepare("SELECT COUNT(*) as cnt FROM random_history WHERE target = ?").get(target) as { cnt: number }).cnt;
+    }
+  }
+
+  private recordSent(photos: PhotoRecord[], target: string): void {
+    const now = new Date().toISOString();
+    const stmt = this.db.prepare(
+      "INSERT OR REPLACE INTO random_history (collection, target, photo_id, sent_at) VALUES (?, ?, ?, ?)",
+    );
+    const tx = this.db.transaction(() => {
+      for (const photo of photos) {
+        stmt.run(photo.collection, target, photo.id, now);
+      }
+    });
+    tx();
+  }
+
+  /**
+   * Clear random history for a target. If collection provided, only clear
+   * history for photos in that collection.
+   */
+  clearHistory(target?: string, collection?: string): number {
+    if (target && collection) {
+      const result = this.db.prepare(
+        "DELETE FROM random_history WHERE collection = ? AND target = ?",
+      ).run(collection, target);
+      return result.changes;
+    } else if (target) {
+      const result = this.db.prepare("DELETE FROM random_history WHERE target = ?").run(target);
+      return result.changes;
+    } else if (collection) {
+      const result = this.db.prepare(
+        "DELETE FROM random_history WHERE collection = ?",
+      ).run(collection);
+      return result.changes;
+    } else {
+      const result = this.db.prepare("DELETE FROM random_history").run();
+      return result.changes;
+    }
+  }
+
+  /** Get random history stats for a target. */
+  getHistoryStats(target: string, collection?: string): RandomHistoryInfo {
+    const total = this.countMatchingPhotos(collection);
+    const sent = this.countSentPhotos(collection, undefined, target);
+    return { total, sent, remaining: total - sent, wasReset: false };
   }
 
   // ── List ────────────────────────────────────────────────────────

@@ -19,6 +19,16 @@ CREATE TABLE IF NOT EXISTS photo_tags (
   PRIMARY KEY (photo_id, tag)
 );
 
+CREATE TABLE IF NOT EXISTS random_history (
+  collection TEXT NOT NULL,
+  target     TEXT NOT NULL,
+  photo_id   TEXT NOT NULL REFERENCES photos(id) ON DELETE CASCADE,
+  sent_at    TEXT NOT NULL,
+  PRIMARY KEY (collection, target, photo_id)
+);
+
 CREATE INDEX IF NOT EXISTS idx_photos_collection ON photos(collection);
 CREATE INDEX IF NOT EXISTS idx_photos_hash ON photos(hash);
 CREATE INDEX IF NOT EXISTS idx_tags_tag ON photo_tags(tag);
+CREATE INDEX IF NOT EXISTS idx_random_history_target ON random_history(target);
+CREATE INDEX IF NOT EXISTS idx_random_history_col_target ON random_history(collection, target);

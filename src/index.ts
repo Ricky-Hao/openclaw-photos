@@ -13,6 +13,8 @@ import {
   createPhotoListExecute,
   photoDeleteParameters,
   createPhotoDeleteExecute,
+  photoResetHistoryParameters,
+  createPhotoResetHistoryExecute,
 } from "./tools.js";
 import type { ToolResult } from "./tools.js";
 
@@ -130,6 +132,15 @@ function register(api: OpenClawPluginApi): void {
       execute: async (id, params) => {
         if (!store) return { content: [{ type: "text", text: JSON.stringify({ error: "Plugin not initialized" }) }] };
         return createPhotoDeleteExecute(store)(id, params);
+      },
+    },
+    {
+      name: "photo_reset_history",
+      description: "Clear random history for a target (or all targets). Photos will be treated as unsent again for random selection.",
+      parameters: photoResetHistoryParameters,
+      execute: async (id, params) => {
+        if (!store) return { content: [{ type: "text", text: JSON.stringify({ error: "Plugin not initialized" }) }] };
+        return createPhotoResetHistoryExecute(store)(id, params);
       },
     },
   ];
