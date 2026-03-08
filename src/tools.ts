@@ -1,7 +1,7 @@
 // ── Tool parameter schemas + execute factories ─────────────────────
 
 import { Type, type TObject } from "@sinclair/typebox";
-import { copyFileSync, mkdirSync, existsSync, unlinkSync, readdirSync } from "node:fs";
+import { copyFileSync, mkdirSync, existsSync, unlinkSync, readdirSync, statSync } from "node:fs";
 import { join, basename } from "node:path";
 import type { PhotoStore } from "./store.js";
 
@@ -51,6 +51,28 @@ export function createPhotoSaveExecute(
   };
 }
 
+// ── tmp cleanup ─────────────────────────────────────────────────────
+
+/** Delete files in tmpDir older than maxAgeMs (default 5 min). */
+function cleanupExpiredTmpFiles(tmpDir: string, maxAgeMs: number = 5 * 60 * 1000): number {
+  if (!existsSync(tmpDir)) return 0;
+  let cleaned = 0;
+  const now = Date.now();
+  for (const file of readdirSync(tmpDir)) {
+    try {
+      const filepath = join(tmpDir, file);
+      const stat = statSync(filepath);
+      if (stat.isFile() && now - stat.mtimeMs > maxAgeMs) {
+        unlinkSync(filepath);
+        cleaned++;
+      }
+    } catch {
+      // ignore errors on individual files
+    }
+  }
+  return cleaned;
+}
+
 // ── photo_get ───────────────────────────────────────────────────────
 
 export const photoGetParameters: TObject = Type.Object({
@@ -70,6 +92,9 @@ export function createPhotoGetExecute(
 ): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
   return async (_id, params) => {
     try {
+      // Clean up expired tmp files from previous calls
+      cleanupExpiredTmpFiles(tmpDir);
+
       const collection = params.collection as string | undefined;
       const tags = params.tags as string[] | undefined;
       const count = (params.count as number | undefined) ?? 1;
@@ -94,7 +119,6 @@ export function createPhotoGetExecute(
       return textResult({
         photos,
         _history: history,
-        _cleanup: `Temporary files copied to ${tmpDir}. Please delete them after sending (e.g. call exec("rm -f <path>") for each file, or exec("rm -rf ${tmpDir}") to clean all).`,
       });
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
