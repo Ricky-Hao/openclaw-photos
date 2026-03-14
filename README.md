@@ -9,6 +9,7 @@ Store images with collections and tags. Retrieve randomly by tag/collection. Lis
 - **Save photos** — download from URL, store locally with SHA-256 dedup
 - **Get photos** — random retrieval, filtered by collection and/or tags (OR match)
 - **List** — collection counts and tag statistics
+- **Update** — modify tags and/or description by ID
 - **Delete** — remove by ID from DB and disk
 
 ## Tools
@@ -18,6 +19,7 @@ Store images with collections and tags. Retrieve randomly by tag/collection. Lis
 | `photo_save` | Save a photo to the library with tags and collection |
 | `photo_get` | Get random photo(s), optionally filtered |
 | `photo_list` | List collections and tag statistics |
+| `photo_update` | Update a photo's tags and/or description by ID |
 | `photo_delete` | Delete a photo by ID |
 
 ## Installation
@@ -41,7 +43,7 @@ Add to `openclaw.json`:
 Then allow tools in agent config:
 
 ```json
-"alsoAllow": ["photo_save", "photo_get", "photo_list", "photo_delete"]
+"alsoAllow": ["photo_save", "photo_get", "photo_list", "photo_update", "photo_delete"]
 ```
 
 ## Development
