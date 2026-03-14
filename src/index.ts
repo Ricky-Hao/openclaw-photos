@@ -11,6 +11,8 @@ import {
   createPhotoGetExecute,
   photoListParameters,
   createPhotoListExecute,
+  photoUpdateParameters,
+  createPhotoUpdateExecute,
   photoDeleteParameters,
   createPhotoDeleteExecute,
   photoResetHistoryParameters,
@@ -132,6 +134,15 @@ function register(api: OpenClawPluginApi): void {
       execute: async (id, params) => {
         if (!store) return { content: [{ type: "text", text: JSON.stringify({ error: "Plugin not initialized" }) }] };
         return createPhotoDeleteExecute(store)(id, params);
+      },
+    },
+    {
+      name: "photo_update",
+      description: "Update a photo's tags and/or description by ID.",
+      parameters: photoUpdateParameters,
+      execute: async (id, params) => {
+        if (!store) return { content: [{ type: "text", text: JSON.stringify({ error: "Plugin not initialized" }) }] };
+        return createPhotoUpdateExecute(store)(id, params);
       },
     },
     {

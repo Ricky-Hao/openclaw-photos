@@ -2,8 +2,8 @@
 
 import type Database from "better-sqlite3";
 import { createHash } from "node:crypto";
-import { mkdirSync, writeFileSync, unlinkSync, existsSync } from "node:fs";
-import { join } from "node:path";
+import { mkdirSync, writeFileSync, unlinkSync, existsSync, readFileSync } from "node:fs";
+import { join, extname } from "node:path";
 
 export interface PhotoRecord {
   id: string;
@@ -70,20 +70,58 @@ export class PhotoStore {
     tags: string[] = [],
     description?: string,
   ): Promise<PhotoRecord> {
-    // Download image
-    const resp = await fetch(url);
-    if (!resp.ok) {
-      throw new Error(`Failed to download image: HTTP ${resp.status}`);
+    let buffer: Buffer;
+    let ct: string;
+    let ext: string;
+
+    // Check if url is a data URL (base64)
+    if (url.startsWith("data:")) {
+      // Parse data URL: data:<mime>;base64,<data>
+      const match = url.match(/^data:([^;]+);base64,(.+)$/);
+      if (!match) {
+        throw new Error("Invalid data URL format");
+      }
+      ct = match[1];
+      buffer = Buffer.from(match[2], "base64");
+      
+      // Determine extension from content-type
+      ext = ct.includes("png")
+        ? ".png"
+        : ct.includes("gif")
+          ? ".gif"
+          : ct.includes("webp")
+            ? ".webp"
+            : ".jpg";
+    } else if (url.startsWith("/") || url.startsWith("./") || url.startsWith("../")) {
+      // Local file path
+      if (!existsSync(url)) {
+        throw new Error(`Local file not found: ${url}`);
+      }
+      buffer = readFileSync(url);
+      const fileExt = extname(url).toLowerCase();
+      ext = [".png", ".gif", ".webp", ".jpg", ".jpeg"].includes(fileExt) ? fileExt : ".jpg";
+      if (ext === ".jpeg") ext = ".jpg";
+      ct = ext === ".png" ? "image/png"
+        : ext === ".gif" ? "image/gif"
+        : ext === ".webp" ? "image/webp"
+        : "image/jpeg";
+    } else {
+      // Download image from HTTP URL
+      const resp = await fetch(url);
+      if (!resp.ok) {
+        throw new Error(`Failed to download image: HTTP ${resp.status}`);
+      }
+      buffer = Buffer.from(await resp.arrayBuffer());
+      ct = resp.headers.get("content-type") || "image/jpeg";
+      ext = ct.includes("png")
+        ? ".png"
+        : ct.includes("gif")
+          ? ".gif"
+          : ct.includes("webp")
+            ? ".webp"
+            : ".jpg";
     }
-    const buffer = Buffer.from(await resp.arrayBuffer());
-    const ct = resp.headers.get("content-type") || "image/jpeg";
-    const ext = ct.includes("png")
-      ? ".png"
-      : ct.includes("gif")
-        ? ".gif"
-        : ct.includes("webp")
-          ? ".webp"
-          : ".jpg";
+
     const hash = createHash("sha256").update(buffer).digest("hex");
 
     // Dedup: check if same hash exists in same collection
@@ -488,6 +526,55 @@ export class PhotoStore {
     }
 
     return { collections, tags, total };
+  }
+
+  // ── Update ──────────────────────────────────────────────────────
+
+  update(
+    id: string,
+    patch: { tags?: string[]; description?: string },
+  ): { updated: boolean; id: string; tags?: string[]; description?: string; error?: string } {
+    const row = this.db
+      .prepare("SELECT id FROM photos WHERE id = ?")
+      .get(id) as { id: string } | undefined;
+
+    if (!row) {
+      return { updated: false, id, error: "Photo not found" };
+    }
+
+    const tx = this.db.transaction(() => {
+      if (patch.description !== undefined) {
+        this.db
+          .prepare("UPDATE photos SET description = ? WHERE id = ?")
+          .run(patch.description, id);
+      }
+
+      if (patch.tags !== undefined) {
+        this.db.prepare("DELETE FROM photo_tags WHERE photo_id = ?").run(id);
+        const insertTag = this.db.prepare(
+          "INSERT OR IGNORE INTO photo_tags (photo_id, tag) VALUES (?, ?)",
+        );
+        for (const tag of patch.tags) {
+          insertTag.run(id, tag);
+        }
+      }
+    });
+    tx();
+
+    // Read back current state
+    const photo = this.db
+      .prepare("SELECT description FROM photos WHERE id = ?")
+      .get(id) as { description: string };
+    const currentTags = this.db
+      .prepare("SELECT tag FROM photo_tags WHERE photo_id = ?")
+      .all(id) as { tag: string }[];
+
+    return {
+      updated: true,
+      id,
+      tags: currentTags.map((t) => t.tag),
+      description: photo.description,
+    };
   }
 
   // ── Delete ──────────────────────────────────────────────────────

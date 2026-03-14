@@ -231,6 +231,117 @@ describe("PhotoStore", () => {
     const saved = store.saveFromBuffer(Buffer.from("no-desc"), ".jpg", "cats", []);
     expect(saved.description).toBe("");
   });
+
+  // ── base64 data URL support ────────────────────────────────────
+
+  it("should save photo from base64 data URL (jpeg)", async () => {
+    const imageData = Buffer.from("fake-jpeg-data");
+    const base64 = imageData.toString("base64");
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+    const saved = await store.save(dataUrl, "cats", ["test"], "From base64");
+    
+    expect(saved.id).toBeTruthy();
+    expect(saved.collection).toBe("cats");
+    expect(saved.file).toMatch(/\.jpg$/);
+    expect(saved.tags).toEqual(["test"]);
+    expect(saved.description).toBe("From base64");
+    expect(existsSync(saved.path)).toBe(true);
+
+    // Verify content matches
+    const fs = await import("node:fs/promises");
+    const content = await fs.readFile(saved.path);
+    expect(content.toString()).toBe("fake-jpeg-data");
+  });
+
+  it("should save photo from base64 data URL (png)", async () => {
+    const imageData = Buffer.from("fake-png-data");
+    const base64 = imageData.toString("base64");
+    const dataUrl = `data:image/png;base64,${base64}`;
+
+    const saved = await store.save(dataUrl, "art", []);
+    
+    expect(saved.file).toMatch(/\.png$/);
+  });
+
+  it("should save photo from base64 data URL (gif)", async () => {
+    const imageData = Buffer.from("fake-gif-data");
+    const base64 = imageData.toString("base64");
+    const dataUrl = `data:image/gif;base64,${base64}`;
+
+    const saved = await store.save(dataUrl, "memes", []);
+    
+    expect(saved.file).toMatch(/\.gif$/);
+  });
+
+  it("should save photo from base64 data URL (webp)", async () => {
+    const imageData = Buffer.from("fake-webp-data");
+    const base64 = imageData.toString("base64");
+    const dataUrl = `data:image/webp;base64,${base64}`;
+
+    const saved = await store.save(dataUrl, "modern", []);
+    
+    expect(saved.file).toMatch(/\.webp$/);
+  });
+
+  it("should deduplicate base64 data URLs by hash", async () => {
+    const imageData = Buffer.from("duplicate-base64-data");
+    const base64 = imageData.toString("base64");
+    const dataUrl = `data:image/jpeg;base64,${base64}`;
+
+    const first = await store.save(dataUrl, "cats", ["cute"]);
+    const second = await store.save(dataUrl, "cats", ["another"]);
+
+    expect(second.id).toBe(first.id);
+    expect(second.hash).toBe(first.hash);
+
+    const { photos } = store.getRandom("cats", undefined, 10);
+    expect(photos).toHaveLength(1);
+  });
+
+  it("should reject invalid data URL format", async () => {
+    await expect(store.save("data:invalid", "cats", [])).rejects.toThrow("Invalid data URL format");
+    await expect(store.save("data:image/jpeg,no-base64-marker", "cats", [])).rejects.toThrow("Invalid data URL format");
+  });
+
+  // ── local file path support ─────────────────────────────────────
+
+  it("should save photo from local file path (jpg)", async () => {
+    // Create a temp file
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "photo-test-"));
+    const tmpFile = path.join(tmpDir, "test-image.jpg");
+    const imageData = Buffer.from("fake-jpg-from-local-file");
+    fs.writeFileSync(tmpFile, imageData);
+
+    const saved = await store.save(tmpFile, "cats", ["local"], "From local path");
+    expect(saved.file).toMatch(/\.jpg$/);
+    expect(saved.description).toBe("From local path");
+    expect(saved.tags).toContain("local");
+
+    // Cleanup
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("should save photo from local file path (png)", async () => {
+    const fs = await import("node:fs");
+    const path = await import("node:path");
+    const os = await import("node:os");
+    const tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), "photo-test-"));
+    const tmpFile = path.join(tmpDir, "test-image.png");
+    fs.writeFileSync(tmpFile, Buffer.from("fake-png-data"));
+
+    const saved = await store.save(tmpFile, "cats", []);
+    expect(saved.file).toMatch(/\.png$/);
+
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  it("should reject non-existent local file path", async () => {
+    await expect(store.save("/tmp/nonexistent-photo-12345.jpg", "cats", [])).rejects.toThrow("Local file not found");
+  });
 });
 
 // ── Send History tests ────────────────────────────────────────────

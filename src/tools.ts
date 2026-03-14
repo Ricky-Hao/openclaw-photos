@@ -27,7 +27,7 @@ function errorResult(message: string): ToolResult {
 // ── photo_save ──────────────────────────────────────────────────────
 
 export const photoSaveParameters: TObject = Type.Object({
-  url: Type.String({ description: "Image URL to download" }),
+  url: Type.String({ description: "Image source: HTTP URL, local file path (/tmp/...), or base64 data URL (data:image/...;base64,...)" }),
   collection: Type.String({ description: 'Collection ID (e.g. "yaoyao")' }),
   tags: Type.Optional(Type.Array(Type.String(), { description: "Tags to assign", default: [] })),
   description: Type.Optional(Type.String({ description: "Human description" })),
@@ -139,6 +139,38 @@ export function createPhotoListExecute(
     try {
       const collection = params.collection as string | undefined;
       const result = store.list(collection);
+      return textResult(result);
+    } catch (err) {
+      return errorResult(err instanceof Error ? err.message : String(err));
+    }
+  };
+}
+
+// ── photo_update ────────────────────────────────────────────────────
+
+export const photoUpdateParameters: TObject = Type.Object({
+  id: Type.String({ description: "Photo ID to update" }),
+  tags: Type.Optional(Type.Array(Type.String(), { description: "New tags (replaces all existing tags)" })),
+  description: Type.Optional(Type.String({ description: "New description" })),
+});
+
+export function createPhotoUpdateExecute(
+  store: PhotoStore,
+): (_id: string, params: Record<string, unknown>) => Promise<ToolResult> {
+  return async (_id, params) => {
+    try {
+      const id = params.id as string;
+      const tags = params.tags as string[] | undefined;
+      const description = params.description as string | undefined;
+
+      if (tags === undefined && description === undefined) {
+        return errorResult("Nothing to update — provide tags and/or description");
+      }
+
+      const result = store.update(id, { tags, description });
+      if (!result.updated) {
+        return errorResult(result.error ?? "Photo not found");
+      }
       return textResult(result);
     } catch (err) {
       return errorResult(err instanceof Error ? err.message : String(err));
